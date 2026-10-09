@@ -2,9 +2,8 @@ name: Node.js CI and Docker CD
 
 on:
   workflow_dispatch:
-  # push:
-  #   branches: [main]
- 
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -37,14 +36,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
+      # Log in to Docker Hub first so the Buildx driver can access credentials natively
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Automatically sets up QEMU for multi-platform builds if needed
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # Configures Buildx to use the Kubernetes driver instead of looking for a local Docker daemon
+      - name: Set up Docker Buildx (Kubernetes Driver)
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: kubernetes
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -55,3 +62,6 @@ jobs:
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKERHUB_REPOSITORY }}:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKERHUB_REPOSITORY }}:${{ github.sha }}
+          # Leverages GitHub Actions cache backend to speed up builds on ARC
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
