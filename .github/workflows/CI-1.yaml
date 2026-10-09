@@ -63,8 +63,8 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKERHUB_REPOSITORY }}:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKERHUB_REPOSITORY }}:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/react-app:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/react-app:${{ github.sha }}
           # Leverages GitHub Actions cache backend to speed up builds on ARC
           cache-from: type=gha
           cache-to: type=gha,mode=max
