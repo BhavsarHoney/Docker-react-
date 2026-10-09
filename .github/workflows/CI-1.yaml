@@ -50,10 +50,11 @@ jobs:
       #     platforms: all
 
       # Configures Buildx to use the Kubernetes driver instead of looking for a local Docker daemon
-      - name: Set up Docker Buildx (Kubernetes Driver)
+      - name: Set up Docker Buildx (Remote Cluster Driver)
         uses: docker/setup-buildx-action@v3
         with:
-          driver: kubernetes
+          driver: remote
+          endpoint: tcp://shared-buildkitd-service.arc-runners.svc.cluster.local:1234
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
