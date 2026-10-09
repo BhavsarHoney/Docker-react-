@@ -44,8 +44,10 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # Automatically sets up QEMU for multi-platform builds if needed
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - name: Set up QEMU (Binfmt Multi-platform)
+        uses: tonistiigi/binfmt-action@v3
+        with:
+          platforms: all
 
       # Configures Buildx to use the Kubernetes driver instead of looking for a local Docker daemon
       - name: Set up Docker Buildx (Kubernetes Driver)
