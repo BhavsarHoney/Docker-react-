@@ -4,7 +4,8 @@ WORKDIR /app
 
 COPY package*.json ./
 
-RUN npm ci
+# FIX: Forces npm to fetch clean, Linux-compatible platform binaries
+RUN npm ci --backwards-compatible || npm ci --legacy-peer-deps
 
 COPY . .
 
