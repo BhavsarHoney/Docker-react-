@@ -37,26 +37,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Verify Buildah prerequisites
+      - name: Install Buildah prerequisites
         shell: bash
         run: |
-          set -euxo pipefail
-
-          echo "=== Runner hostname ==="
-          echo "$HOSTNAME"
-
-          echo "=== User namespace limit ==="
-          cat /proc/sys/user/max_user_namespaces
-
-          echo "=== User namespace creation test ==="
-          unshare -Ur true
-
-          echo "User namespace creation succeeded"
-
-      - name: Install Buildah
-        shell: bash
-        run: |
-          set -euxo pipefail
+          set -euo pipefail
 
           if ! command -v buildah >/dev/null 2>&1; then
             sudo -n apt-get update
@@ -65,15 +49,18 @@ jobs:
 
           buildah --version
 
-      - name: Diagnose Buildah environment
+      - name: Diagnose runner namespace restrictions
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
 
           echo "=== Runner identity ==="
           id
 
-          echo "=== User namespace limit ==="
+          echo "=== Hostname ==="
+          hostname
+
+          echo "=== Maximum user namespaces ==="
           cat /proc/sys/user/max_user_namespaces
 
           echo "=== Current user namespace ==="
@@ -82,14 +69,26 @@ jobs:
           echo "=== Seccomp mode ==="
           grep '^Seccomp:' /proc/self/status
 
-          echo "=== UID/GID mappings ==="
+          echo "=== Current setgroups state ==="
+          cat /proc/self/setgroups 2>/dev/null || true
+
+          echo "=== unshare test ==="
+          unshare -Ur true
+
+          echo "=== Buildah UID mapping ==="
           buildah unshare cat /proc/self/uid_map || true
+
+          echo "=== Buildah GID mapping ==="
           buildah unshare cat /proc/self/gid_map || true
 
-      - name: Configure Buildah single-UID VFS storage
+          echo "=== Buildah setgroups state ==="
+          buildah unshare sh -c \
+            'cat /proc/self/setgroups 2>/dev/null || true' || true
+
+      - name: Configure Buildah VFS storage
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
 
           mkdir -p "$HOME/.config/containers"
           mkdir -p "$HOME/.local/share/containers/storage"
@@ -105,10 +104,10 @@ jobs:
           ignore_chown_errors = "true"
           EOF
 
-          echo "=== Buildah storage configuration ==="
+          echo "=== Storage configuration ==="
           cat "$HOME/.config/containers/storage.conf"
 
-          echo "=== Buildah information ==="
+          echo "=== Buildah info ==="
           buildah info
 
       - name: Log in to Docker Hub
@@ -145,6 +144,17 @@ jobs:
             --tag "docker.io/${DOCKERHUB_USERNAME}/react-app:latest" \
             --tag "docker.io/${DOCKERHUB_USERNAME}/react-app:${GITHUB_SHA}" \
             .
+
+      - name: Verify built image
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          buildah images
+          buildah inspect \
+            "docker.io/${DOCKERHUB_USERNAME}/react-app:latest"
 
       - name: Push Docker images
         env:
