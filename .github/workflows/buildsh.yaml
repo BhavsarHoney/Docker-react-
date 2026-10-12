@@ -1,3 +1,4 @@
+
 name: Node.js CI and Docker CD
 
 on:
@@ -36,7 +37,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install and verify Buildah
+      - name: Install Buildah
         run: |
           set -eu
 
@@ -47,9 +48,10 @@ jobs:
 
           buildah --version
 
-          echo "User:"
+      - name: Check Buildah environment
+        run: |
+          set -eu
           id
-
           echo "User namespace limit:"
           cat /proc/sys/user/max_user_namespaces
 
@@ -60,17 +62,22 @@ jobs:
         run: |
           set -eu
 
-          printf '%s' "$DOCKERHUB_TOKEN" | buildah login \
+          printf '%s' "$DOCKERHUB_TOKEN" | buildah \
+            --storage-driver vfs \
+            login \
             --username "$DOCKERHUB_USERNAME" \
             --password-stdin docker.io
 
       - name: Build Docker image using Buildah
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          BUILDAH_ISOLATION: chroot
         run: |
           set -eu
 
-          buildah bud \
+          buildah \
+            --storage-driver vfs \
+            bud \
             --isolation chroot \
             --format docker \
             --file ./Dockerfile \
@@ -84,10 +91,10 @@ jobs:
         run: |
           set -eu
 
-          buildah push \
+          buildah --storage-driver vfs push \
             "docker.io/${DOCKERHUB_USERNAME}/react-app:latest"
 
-          buildah push \
+          buildah --storage-driver vfs push \
             "docker.io/${DOCKERHUB_USERNAME}/react-app:${GITHUB_SHA}"
 
       - name: Log out from Docker Hub
