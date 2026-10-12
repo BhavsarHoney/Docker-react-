@@ -38,34 +38,20 @@ jobs:
 
       - name: Check runner permissions
         run: |
+          set -eu
           id
-          sudo -n true
-          echo "Passwordless sudo is available"
+          buildah --version
+          echo "User namespace limit:"
+          cat /proc/sys/user/max_user_namespaces
 
       - name: Install Buildah
         run: |
-          sudo -n apt-get update
-          sudo -n apt-get install -y buildah
+          set -eu
+          if ! command -v buildah >/dev/null 2>&1; then
+            sudo -n apt-get update
+            sudo -n apt-get install -y buildah
+          fi
           buildah --version
-        
-      - name: Diagnose Buildah environment
-        run: |
-         echo "User:"
-          id
-
-           echo "User namespace limit:"
-           cat /proc/sys/user/max_user_namespaces
-
-          echo "Buildah version:"
-           buildah --version
-
-          echo "Storage configuration:"
-          cat /etc/containers/storage.conf || true
-
-      - name: Check Buildah environment
-        run: |
-          buildah info
-          buildah info --format '{{.store.graphDriverName}}'
 
       - name: Log in to Docker Hub
         env:
@@ -77,12 +63,14 @@ jobs:
             --username "$DOCKERHUB_USERNAME" \
             --password-stdin docker.io
 
-      - name: Build Docker image
+      - name: Build Docker image using Buildah
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           set -eu
+
           buildah bud \
+            --isolation chroot \
             --format docker \
             --file ./Dockerfile \
             --tag "docker.io/${DOCKERHUB_USERNAME}/react-app:latest" \
@@ -94,6 +82,7 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           set -eu
+
           buildah push \
             "docker.io/${DOCKERHUB_USERNAME}/react-app:latest"
 
