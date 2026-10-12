@@ -36,7 +36,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        
+
       - name: Verify Buildah prerequisites
         run: |
          echo "Node: $HOSTNAME"
@@ -79,6 +79,36 @@ jobs:
          echo "=== Seccomp mode ==="
          grep '^Seccomp:' /proc/self/status
 
+
+      - name : Configure rooltless buildsh UID/GID mappings
+        shell: bash
+        run: |     
+         set -euxo pipefail 
+         echo "=== Runner identity ==="
+         id
+         echo "=== Existing mappings ==="
+         sudo apt-get update
+         sudo apt-get install -y uidmap
+
+         echo "===configure subbordinateIBS==="
+         if ! sudo grep -q '^runner:' /etc/subuid; then
+           echo "runner:100000:65536" | sudo tee -a /etc/subuid
+         fi
+         if ! sudo grep -q '^runner:' /etc/subgid; then
+           echo "runner:100000:65536" | sudo tee -a /etc/subgid
+         fi       
+          
+         echo "=== Verify files and helpers ==="
+         sudo cat /etc/subuid
+         sudo cat /etc/subgid
+         command -v newuidmap
+         command -v newgidmap
+         ls -l "$(command -v newuidmap)" "$(command -v newgidmap)"
+
+         echo "=== Verify Buildah mappings ==="
+         buildah unshare cat /proc/self/uid_map
+         buildah unshare cat /proc/self/gid_map
+      
       - name: Log in to Docker Hub
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
