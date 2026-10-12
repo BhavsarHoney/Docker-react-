@@ -1,0 +1,91 @@
+name: Node.js CI and Docker CD
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: company-eks-runners
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test --if-present
+
+  build-and-push:
+    needs: test
+    runs-on: company-eks-runners
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check runner permissions
+        run: |
+          id
+          sudo -n true
+          echo "Passwordless sudo is available"
+
+      - name: Install Buildah
+        run: |
+          sudo -n apt-get update
+          sudo -n apt-get install -y buildah
+          buildah --version
+
+      - name: Check Buildah environment
+        run: |
+          buildah info
+          buildah info --format '{{.store.graphDriverName}}'
+
+      - name: Log in to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -eu
+          printf '%s' "$DOCKERHUB_TOKEN" | buildah login \
+            --username "$DOCKERHUB_USERNAME" \
+            --password-stdin docker.io
+
+      - name: Build Docker image
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          set -eu
+          buildah bud \
+            --format docker \
+            --file ./Dockerfile \
+            --tag "docker.io/${DOCKERHUB_USERNAME}/react-app:latest" \
+            --tag "docker.io/${DOCKERHUB_USERNAME}/react-app:${GITHUB_SHA}" \
+            .
+
+      - name: Push Docker image
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          set -eu
+          buildah push \
+            "docker.io/${DOCKERHUB_USERNAME}/react-app:latest"
+
+          buildah push \
+            "docker.io/${DOCKERHUB_USERNAME}/react-app:${GITHUB_SHA}"
+
+      - name: Log out from Docker Hub
+        if: always()
+        run: buildah logout docker.io
