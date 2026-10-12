@@ -55,6 +55,21 @@ jobs:
           echo "User namespace limit:"
           cat /proc/sys/user/max_user_namespaces
 
+      
+      - name: Diagnose Buildah namespace restrictions
+        run: |
+         echo "=== User namespace limit ==="
+         cat /proc/sys/user/max_user_namespaces
+
+         echo "=== Current user namespace ==="
+         readlink /proc/self/ns/user
+
+         echo "=== User namespace creation test ==="
+         unshare -Ur true || true
+
+         echo "=== Seccomp mode ==="
+         grep '^Seccomp:' /proc/self/status
+
       - name: Log in to Docker Hub
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
