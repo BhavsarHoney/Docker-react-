@@ -47,6 +47,20 @@ jobs:
           sudo -n apt-get update
           sudo -n apt-get install -y buildah
           buildah --version
+        
+      - name: Diagnose Buildah environment
+        run: |
+         echo "User:"
+          id
+
+           echo "User namespace limit:"
+           cat /proc/sys/user/max_user_namespaces
+
+          echo "Buildah version:"
+           buildah --version
+
+          echo "Storage configuration:"
+          cat /etc/containers/storage.conf || true
 
       - name: Check Buildah environment
         run: |
