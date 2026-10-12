@@ -36,7 +36,16 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
+        
+      - name: Verify Buildah prerequisites
+        run: |
+         echo "Node: $HOSTNAME"
+         cat /proc/sys/user/max_user_namespaces
+         unshare -Ur true
+         echo "User namespace creation succeeded"
+ 
+      
+      
       - name: Install Buildah
         run: |
           set -eu
