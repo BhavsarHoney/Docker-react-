@@ -38,100 +38,107 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Verify Buildah prerequisites
+        shell: bash
         run: |
-         echo "Node: $HOSTNAME"
-         cat /proc/sys/user/max_user_namespaces
-         unshare -Ur true
-         echo "User namespace creation succeeded"
- 
-      
-      
+          set -euxo pipefail
+
+          echo "=== Runner hostname ==="
+          echo "$HOSTNAME"
+
+          echo "=== User namespace limit ==="
+          cat /proc/sys/user/max_user_namespaces
+
+          echo "=== User namespace creation test ==="
+          unshare -Ur true
+
+          echo "User namespace creation succeeded"
+
       - name: Install Buildah
+        shell: bash
         run: |
-          set -eu
+          set -euxo pipefail
 
           if ! command -v buildah >/dev/null 2>&1; then
             sudo -n apt-get update
-            sudo -n apt-get install -y buildah
+            sudo -n apt-get install -y buildah uidmap
           fi
 
           buildah --version
 
-      - name: Check Buildah environment
+      - name: Diagnose Buildah environment
+        shell: bash
         run: |
-          set -eu
+          set -euxo pipefail
+
+          echo "=== Runner identity ==="
           id
-          echo "User namespace limit:"
+
+          echo "=== User namespace limit ==="
           cat /proc/sys/user/max_user_namespaces
 
-      
-      - name: Diagnose Buildah namespace restrictions
-        run: |
-         echo "=== User namespace limit ==="
-         cat /proc/sys/user/max_user_namespaces
+          echo "=== Current user namespace ==="
+          readlink /proc/self/ns/user
 
-         echo "=== Current user namespace ==="
-         readlink /proc/self/ns/user
+          echo "=== Seccomp mode ==="
+          grep '^Seccomp:' /proc/self/status
 
-         echo "=== User namespace creation test ==="
-         unshare -Ur true || true
+          echo "=== UID/GID mappings ==="
+          buildah unshare cat /proc/self/uid_map || true
+          buildah unshare cat /proc/self/gid_map || true
 
-         echo "=== Seccomp mode ==="
-         grep '^Seccomp:' /proc/self/status
-
-
-      - name : Configure rooltless buildsh UID/GID mappings
+      - name: Configure Buildah single-UID VFS storage
         shell: bash
-        run: |     
-         set -euxo pipefail 
-         echo "=== Runner identity ==="
-         id
-         echo "=== Existing mappings ==="
-         sudo apt-get update
-         sudo apt-get install -y uidmap
+        run: |
+          set -euxo pipefail
 
-         echo "===configure subbordinateIBS==="
-         if ! sudo grep -q '^runner:' /etc/subuid; then
-           echo "runner:100000:65536" | sudo tee -a /etc/subuid
-         fi
-         if ! sudo grep -q '^runner:' /etc/subgid; then
-           echo "runner:100000:65536" | sudo tee -a /etc/subgid
-         fi       
-          
-         echo "=== Verify files and helpers ==="
-         sudo cat /etc/subuid
-         sudo cat /etc/subgid
-         command -v newuidmap
-         command -v newgidmap
-         ls -l "$(command -v newuidmap)" "$(command -v newgidmap)"
+          mkdir -p "$HOME/.config/containers"
+          mkdir -p "$HOME/.local/share/containers/storage"
+          mkdir -p "/tmp/containers-run-$(id -u)"
 
-         echo "=== Verify Buildah mappings ==="
-         buildah unshare cat /proc/self/uid_map
-         buildah unshare cat /proc/self/gid_map
-      
+          cat > "$HOME/.config/containers/storage.conf" <<EOF
+          [storage]
+          driver = "vfs"
+          runroot = "/tmp/containers-run-$(id -u)"
+          graphroot = "$HOME/.local/share/containers/storage"
+
+          [storage.options.vfs]
+          ignore_chown_errors = "true"
+          EOF
+
+          echo "=== Buildah storage configuration ==="
+          cat "$HOME/.config/containers/storage.conf"
+
+          echo "=== Buildah information ==="
+          buildah info
+
       - name: Log in to Docker Hub
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        shell: bash
         run: |
-          set -eu
+          set -euo pipefail
 
-          printf '%s' "$DOCKERHUB_TOKEN" | buildah \
-            --storage-driver vfs \
-            login \
-            --username "$DOCKERHUB_USERNAME" \
-            --password-stdin docker.io
+          if [[ -z "$DOCKERHUB_USERNAME" || -z "$DOCKERHUB_TOKEN" ]]; then
+            echo "Docker Hub credentials are missing."
+            exit 1
+          fi
+
+          printf '%s' "$DOCKERHUB_TOKEN" |
+            buildah login \
+              --username "$DOCKERHUB_USERNAME" \
+              --password-stdin \
+              docker.io
 
       - name: Build Docker image using Buildah
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           BUILDAH_ISOLATION: chroot
+        shell: bash
         run: |
-          set -eu
+          set -euo pipefail
 
-          buildah \
-            --storage-driver vfs \
-            bud \
+          buildah bud \
             --isolation chroot \
             --format docker \
             --file ./Dockerfile \
@@ -139,18 +146,21 @@ jobs:
             --tag "docker.io/${DOCKERHUB_USERNAME}/react-app:${GITHUB_SHA}" \
             .
 
-      - name: Push Docker image
+      - name: Push Docker images
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        shell: bash
         run: |
-          set -eu
+          set -euo pipefail
 
-          buildah --storage-driver vfs push \
+          buildah push \
             "docker.io/${DOCKERHUB_USERNAME}/react-app:latest"
 
-          buildah --storage-driver vfs push \
+          buildah push \
             "docker.io/${DOCKERHUB_USERNAME}/react-app:${GITHUB_SHA}"
 
       - name: Log out from Docker Hub
         if: always()
-        run: buildah logout docker.io
+        shell: bash
+        run: |
+          buildah logout docker.io || true
