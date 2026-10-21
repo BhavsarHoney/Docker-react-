@@ -3,8 +3,8 @@ name: Node.js CI and Docker CD
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
+  # push:
+  #   branches: [main]
 
 permissions:
   contents: read
