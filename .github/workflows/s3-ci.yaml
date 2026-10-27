@@ -1,67 +1,90 @@
-name: Node.js CI, Docker CD and S3 Artifacts
+
+name: React CI-CD Pipeline
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
-  # Uncomment to trigger automatically on pushes to main
-  # push:
-  #   branches: [main]
 
 permissions:
   contents: read
 
+concurrency:
+  group: react-ci-cd-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "22"
+  DOCKER_IMAGE: hanibhavsar/react-app
+
 jobs:
-  # 1. Test application
+
+  # --------------------------------------------------
+  # 1. Test React application
+  # --------------------------------------------------
   test:
-    name: Node.js Tests
+    name: Test React Application
     runs-on: company-eks-runners
 
     steps:
-      - name: Checkout code
+      - name: Checkout source code
         uses: actions/checkout@v4
 
-      - name: Install Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
-
-      - name: Verify Node.js
-        run: |
-          node --version
-          npm --version
 
       - name: Install dependencies
         run: npm ci
 
       - name: Run tests
-        run: npm test --if-present
+        run: npm test --if-present -- --watchAll=false
 
-  # 2. Build React application and package ZIP
+  # --------------------------------------------------
+  # 2. Build and package React application
+  # --------------------------------------------------
   build-app:
     name: Build React Application
-    needs: test
     runs-on: company-eks-runners
+    needs: test
 
     steps:
-      - name: Checkout code
+      - name: Checkout source code
         uses: actions/checkout@v4
 
-      - name: Install Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      - name: Install React dependencies
+      - name: Install dependencies
         run: npm ci
 
       - name: Build React application
+        run: npm run build
+
+      - name: Verify build directory
+        shell: bash
         run: |
           set -euo pipefail
-          npm run build
 
-          test -d build
-          test -n "$(find build -type f -print -quit)"
+          if [ ! -d build ]; then
+            echo "::error::React build directory was not created."
+            echo "Check whether your build output is build/ or dist/."
+            exit 1
+          fi
+
+          if [ -z "$(find build -type f -print -quit)" ]; then
+            echo "::error::Build directory is empty."
+            exit 1
+          fi
+
+          echo "Build contents:"
+          ls -lah build/
 
       - name: Package React build
         run: |
@@ -70,94 +93,103 @@ jobs:
           test -s react-build.zip
           ls -lh react-build.zip
 
-      - name: Upload React build for Docker job
+      - name: Upload React build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: react-build-${{ github.run_id }}
+          name: react-build
           path: build/
           if-no-files-found: error
           retention-days: 3
 
-      - name: Upload ZIP for S3 job
+      - name: Upload ZIP artifact
         uses: actions/upload-artifact@v4
         with:
-          name: react-build-zip-${{ github.run_id }}
+          name: react-build-zip
           path: react-build.zip
           if-no-files-found: error
           retention-days: 3
 
-  # 3. Build and push Docker image
+  # --------------------------------------------------
+  # 3. Build and push Docker image using Buildx + DinD
+  # --------------------------------------------------
   build-and-push:
     name: Build and Push Docker Image
-    needs: build-app
     runs-on: company-eks-runners
+    needs: build-app
 
     steps:
-      - name: Checkout code
+      - name: Checkout source code
         uses: actions/checkout@v4
 
-      - name: Download React build
+      - name: Download React build artifact
         uses: actions/download-artifact@v4
         with:
-          name: react-build-${{ github.run_id }}
+          name: react-build
           path: build/
 
       - name: Verify Docker daemon
+        shell: bash
         run: |
+          set -euo pipefail
           docker version
           docker info
 
-      - name: Set up Docker Buildx
+      - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
           driver: docker-container
 
-      - name: Log in to Docker Hub
+      - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push Docker image
+      - name: Verify Docker build inputs
+        run: |
+          set -euo pipefail
+
+          test -f Dockerfile
+          test -d build
+          test -n "$(find build -type f -print -quit)"
+
+          echo "Dockerfile and React build directory found."
+
+      - name: Build and push image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           push: true
           tags: |
-            hanibhavsar/react-app:${{ github.sha }}
-            hanibhavsar/react-app:latest
+            ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+            ${{ env.DOCKER_IMAGE }}:latest
           cache-from: type=gha,scope=react-app
           cache-to: type=gha,mode=max,scope=react-app
 
-  # 4. Upload ZIP to private S3 and generate download link
+  # --------------------------------------------------
+  # 4. Upload ZIP to S3 and validate pre-signed URL
+  # --------------------------------------------------
   upload-s3:
-    name: Upload Artifact to Private S3
-    needs: build-app
+    name: Upload Build to S3 and Verify Download Link
     runs-on: company-eks-runners
-    timeout-minutes: 15
+    needs: build-app
 
     steps:
-      - name: Download React build ZIP
+      - name: Download ZIP artifact
         uses: actions/download-artifact@v4
         with:
-          name: react-build-zip-${{ github.run_id }}
+          name: react-build-zip
           path: artifact-package/
 
-      - name: Verify downloaded ZIP
+      - name: Verify ZIP artifact
+        shell: bash
         run: |
           set -euo pipefail
+
           test -s artifact-package/react-build.zip
+          python3 -m zipfile -t artifact-package/react-build.zip
           ls -lh artifact-package/react-build.zip
-
-      - name: Install AWS CLI v2
-        uses: ankurk91/install-aws-cli-action@v1
-        with:
-          version: latest
-          cache: true
-
-      - name: Verify AWS CLI
-        run: aws --version
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -166,90 +198,119 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
 
-      - name: Verify AWS identity
-        run: aws sts get-caller-identity
-
-      # Create the object key once and reuse it in every subsequent step.
-      - name: Upload ZIP to private S3
-        id: upload
+      - name: Verify AWS identity and S3 configuration
         env:
           BUCKET: ${{ vars.ARTIFACT_BUCKET }}
-          RUN_NUMBER: ${{ github.run_number }}
-          SHA: ${{ github.sha }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        shell: bash
         run: |
           set -euo pipefail
 
-          test -n "$BUCKET"
-          test -s artifact-package/react-build.zip
+          if [ -z "$BUCKET" ] || [ -z "$AWS_REGION" ]; then
+            echo "::error::ARTIFACT_BUCKET or AWS_REGION is missing."
+            exit 1
+          fi
 
-          KEY="react-app/builds/${RUN_NUMBER}-${SHA}/react-build.zip"
+          echo "AWS identity:"
+          aws sts get-caller-identity
 
-          echo "Uploading to s3://${BUCKET}/${KEY}"
+          echo "AWS CLI credential configuration:"
+          aws configure list
+
+          echo "Bucket: $BUCKET"
+          echo "Region: $AWS_REGION"
+
+      - name: Upload ZIP and validate pre-signed URL
+        env:
+          BUCKET: ${{ vars.ARTIFACT_BUCKET }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KEY="react-app/builds/${GITHUB_RUN_NUMBER}-${GITHUB_SHA}/react-build.zip"
+
+          echo "Uploading ZIP to S3..."
+          echo "Object key: $KEY"
 
           aws s3 cp \
             artifact-package/react-build.zip \
             "s3://${BUCKET}/${KEY}" \
-            --no-progress
+            --region "$AWS_REGION"
 
-          echo "artifact_key=${KEY}" >> "$GITHUB_OUTPUT"
-
-      # Confirm the exact uploaded object exists.
-      - name: Verify S3 object
-        env:
-          BUCKET: ${{ vars.ARTIFACT_BUCKET }}
-          KEY: ${{ steps.upload.outputs.artifact_key }}
-        run: |
-          set -euo pipefail
-
-          echo "Checking s3://${BUCKET}/${KEY}"
-
+          echo "Verifying uploaded object..."
           aws s3api head-object \
             --bucket "$BUCKET" \
-            --key "$KEY"
+            --key "$KEY" \
+            --region "$AWS_REGION"
 
-      # Generate a URL for the same key used by the upload step.
-      - name: Generate pre-signed URL
-        id: presign
-        env:
-          BUCKET: ${{ vars.ARTIFACT_BUCKET }}
-          KEY: ${{ steps.upload.outputs.artifact_key }}
-        run: |
-          set -euo pipefail
-
-          test -n "$KEY"
-
+          echo "Generating pre-signed URL..."
           URL=$(aws s3 presign \
             "s3://${BUCKET}/${KEY}" \
+            --region "$AWS_REGION" \
             --expires-in 3600)
 
-          test -n "$URL"
+          if [ -z "$URL" ]; then
+            echo "::error::AWS CLI returned an empty URL."
+            exit 1
+          fi
 
-          {
-            echo "url<<EOF"
-            echo "$URL"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+          echo "Generated URL host:"
+          python3 -c \
+            'import sys,urllib.parse; print(urllib.parse.urlparse(sys.argv[1]).hostname)' \
+            "$URL"
 
-          echo "Pre-signed URL generated successfully."
+          echo "Checking pre-signed URL without printing it..."
+          HTTP_CODE=$(curl -sS \
+            --connect-timeout 15 \
+            --max-time 120 \
+            -o /tmp/s3-response \
+            -w "%{http_code}" \
+            "$URL")
 
-      # Publish the link in the GitHub Actions run summary.
-      - name: Publish artifact download link
-        env:
-          URL: ${{ steps.presign.outputs.url }}
-          SHA: ${{ github.sha }}
-          RUN_NUMBER: ${{ github.run_number }}
-          KEY: ${{ steps.upload.outputs.artifact_key }}
-        run: |
-          set -euo pipefail
+          echo "Pre-signed URL HTTP status: $HTTP_CODE"
 
-          {
-            echo "## React Build Artifact"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::S3 pre-signed URL validation failed."
+
+            echo "S3 error response:"
+            cat /tmp/s3-response
             echo
-            echo "- Build: ${RUN_NUMBER}"
-            echo "- Commit: \`${SHA}\`"
-            echo "- Storage: Private Amazon S3"
-            echo "- S3 object key: \`${KEY}\`"
-            echo "- URL validity: Up to 60 minutes"
+
+            echo "URL structure (credential values redacted):"
+            python3 - "$URL" <<'PY'
+          import sys
+          from urllib.parse import urlparse, parse_qs
+
+          parsed = urlparse(sys.argv[1])
+          params = parse_qs(parsed.query)
+
+          print("Host:", parsed.hostname)
+          print("Path:", parsed.path)
+          print("Region:", params.get("X-Amz-Credential", [""])[0].split("/")[2]
+                if len(params.get("X-Amz-Credential", [""])[0].split("/")) > 2
+                else "Missing")
+          print("Signature present:", "X-Amz-Signature" in params)
+          print("Credential present:", "X-Amz-Credential" in params)
+          print("Expiry:", params.get("X-Amz-Expires", ["Missing"])[0])
+          PY
+
+            exit 1
+          fi
+
+          echo "Pre-signed URL download succeeded."
+
+          # Publish the working link in the GitHub Actions run summary.
+          # Anyone possessing this URL can download the object until it expires.
+          {
+            echo "## React Build Download"
+            echo
+            echo "- **S3 bucket:** \`${BUCKET}\`"
+            echo "- **Object key:** \`${KEY}\`"
+            echo "- **Validation:** HTTP 200"
+            echo "- **URL expiry:** 1 hour after generation"
             echo
             echo "[Download React Build ZIP](${URL})"
+            echo
+            echo "> This is a temporary bearer link. Anyone who has it can download the ZIP until it expires."
           } >> "$GITHUB_STEP_SUMMARY"
