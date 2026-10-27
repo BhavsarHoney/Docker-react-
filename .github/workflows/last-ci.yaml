@@ -1,0 +1,293 @@
+
+name: Node.js CI, Docker CD and S3 Artifacts
+
+on:
+  workflow_dispatch:
+  # Uncomment to trigger automatically on pushes to main
+  # push:
+  #   branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # 1. Test application
+  test:
+    name: Node.js Tests
+    runs-on: company-eks-runners
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Verify Node.js
+        run: |
+          node --version
+          npm --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test --if-present
+
+  # 2. Build React application
+  build-app:
+    name: Build React Application
+    needs: test
+    runs-on: company-eks-runners
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install React dependencies
+        run: npm ci
+
+      - name: Build React application
+        run: |
+          set -euo pipefail
+          npm run build
+          test -d build
+          test -n "$(find build -type f -print -quit)"
+
+      - name: Package React build
+        run: |
+          set -euo pipefail
+          python3 -m zipfile -c react-build.zip build
+          test -s react-build.zip
+          python3 -m zipfile -t react-build.zip
+
+      - name: Upload React build for Docker job
+        uses: actions/upload-artifact@v4
+        with:
+          name: react-build-${{ github.run_id }}
+          path: build/
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload ZIP for S3 job
+        uses: actions/upload-artifact@v4
+        with:
+          name: react-build-zip-${{ github.run_id }}
+          path: react-build.zip
+          if-no-files-found: error
+          retention-days: 3
+
+  # 3. Build and push Docker image
+  build-and-push:
+    name: Build and Push Docker Image
+    needs: build-app
+    runs-on: company-eks-runners
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download React build
+        uses: actions/download-artifact@v4
+        with:
+          name: react-build-${{ github.run_id }}
+          path: build/
+
+      - name: Verify Docker daemon
+        run: |
+          docker version
+          docker info
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Verify Docker build inputs
+        run: |
+          set -euo pipefail
+          test -f Dockerfile
+          test -d build
+          test -n "$(find build -type f -print -quit)"
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            hanibhavsar/react-app:${{ github.sha }}
+            hanibhavsar/react-app:latest
+          cache-from: type=gha,scope=react-app
+          cache-to: type=gha,mode=max,scope=react-app
+
+  # 4. Upload ZIP to private S3 and publish download link
+  upload-s3:
+    name: Upload Artifact to Private S3
+    needs: build-app
+    runs-on: company-eks-runners
+    timeout-minutes: 15
+
+    steps:
+      - name: Download React build ZIP
+        uses: actions/download-artifact@v4
+        with:
+          name: react-build-zip-${{ github.run_id }}
+          path: artifact-package/
+
+      - name: Install AWS CLI v2
+        uses: ankurk91/install-aws-cli-action@v1
+        with:
+          version: latest
+          cache: true
+
+      - name: Verify AWS CLI
+        run: aws --version
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Upload ZIP to private S3
+        id: upload
+        env:
+          BUCKET: ${{ vars.ARTIFACT_BUCKET }}
+          RUN_NUMBER: ${{ github.run_number }}
+          SHA: ${{ github.sha }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s artifact-package/react-build.zip
+
+          KEY="react-app/builds/${RUN_NUMBER}-${SHA}/react-build.zip"
+
+          aws s3 cp \
+            artifact-package/react-build.zip \
+            "s3://${BUCKET}/${KEY}" \
+            --region "$AWS_REGION" \
+            --no-progress
+
+          # Confirm that the object exists.
+          aws s3api head-object \
+            --bucket "$BUCKET" \
+            --key "$KEY" \
+            --region "$AWS_REGION"
+
+          echo "artifact_key=${KEY}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate and validate pre-signed URL
+        id: presign
+        env:
+          BUCKET: ${{ vars.ARTIFACT_BUCKET }}
+          KEY: ${{ steps.upload.outputs.artifact_key }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          URL="$(aws s3 presign \
+            "s3://${BUCKET}/${KEY}" \
+            --region "$AWS_REGION" \
+            --expires-in 3600)"
+
+
+          # Pass the URL to later steps without printing it.
+          {
+            echo "url<<EOF"
+            echo "$URL"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish artifact download link
+        env:
+          URL: ${{ steps.presign.outputs.url }}
+          SHA: ${{ github.sha }}
+          RUN_NUMBER: ${{ github.run_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "## React Build Artifact"
+            echo
+            echo "- **Build:** ${RUN_NUMBER}"
+            echo "- **Commit:** \`${SHA}\`"
+            echo "- **Storage:** Private Amazon S3"
+            echo "- **URL validity:** Up to one hour"
+            echo "- **Docker image:** \`hanibhavsar/react-app:${SHA}\`"
+            echo
+            echo "[Download React Build ZIP](${URL})"
+            echo
+            echo "The HTML download page is available in the workflow artifacts."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create HTML download page
+        env:
+          DOWNLOAD_URL: ${{ steps.presign.outputs.url }}
+          SHA: ${{ github.sha }}
+          RUN_NUMBER: ${{ github.run_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          from html import escape
+
+          url = escape(os.environ["DOWNLOAD_URL"], quote=True)
+          sha = escape(os.environ["SHA"])
+          run_number = escape(os.environ["RUN_NUMBER"])
+
+          html = f"""<!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>React Build Download</title>
+          </head>
+          <body>
+            <h1>React Build Download</h1>
+            <p>Build number: {run_number}</p>
+            <p>Commit: {sha}</p>
+            <p><a href="{url}">Download React Build ZIP</a></p>
+            <p>This temporary link expires after approximately one hour.</p>
+          </body>
+          </html>
+          """
+
+          with open("index.html", "w", encoding="utf-8") as f:
+              f.write(html)
+
+          print("HTML download page created.")
+
+      - name: Upload HTML page as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: react-build-download-page
+          path: index.html
+          if-no-files-found: error
+          retention-days: 1
