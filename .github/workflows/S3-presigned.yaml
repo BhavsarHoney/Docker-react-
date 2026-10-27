@@ -143,12 +143,14 @@ jobs:
           name: react-build-zip-${{ github.run_id }}
           path: artifact-package/
 
-      - name: Install AWS CLI
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y awscli
-          aws --version
+      - name: Install AWS CLI v2
+        uses: ankurk91/install-aws-cli-action@v1
+        with:
+          version: latest
+          cache: true
+
+      - name: Verify AWS CLI
+        run: aws --version
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
