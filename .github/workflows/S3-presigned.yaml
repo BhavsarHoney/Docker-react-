@@ -1,3 +1,4 @@
+
 name: Node.js CI, Docker CD and S3 Artifacts
 
 on:
@@ -19,6 +20,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
       - name: Verify Node.js
         run: |
           node --version
@@ -30,7 +37,7 @@ jobs:
       - name: Run tests
         run: npm test --if-present
 
-  # 2. Build React application 
+  # 2. Build React application
   build-app:
     name: Build React Application
     needs: test
@@ -39,6 +46,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
 
       - name: Install React dependencies
         run: npm ci
