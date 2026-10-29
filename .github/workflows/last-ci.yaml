@@ -291,6 +291,7 @@
 #           path: index.html
 #           if-no-files-found: error
 #           retention-days: 1
+
 name: Node.js CI, Docker CD and S3 Artifacts
 
 on:
@@ -307,6 +308,7 @@ jobs:
   test:
     name: Node.js Tests
     runs-on: company-eks-runners
+    timeout-minutes: 15
 
     steps:
       - name: Checkout code
@@ -329,11 +331,13 @@ jobs:
       - name: Run tests
         run: npm test --if-present
 
-  # 2. Build React application
+  # 2. Build React, upload ZIP directly to S3,
+  #    and publish the download link
   build-app:
-    name: Build React Application
+    name: Build React and Upload to S3
     needs: test
     runs-on: company-eks-runners
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
@@ -362,6 +366,8 @@ jobs:
           test -s react-build.zip
           python3 -m zipfile -t react-build.zip
 
+      # Required by the separate Docker job.
+      # The ZIP is NOT uploaded as a GitHub artifact.
       - name: Upload React build for Docker job
         uses: actions/upload-artifact@v4
         with:
@@ -369,79 +375,6 @@ jobs:
           path: build/
           if-no-files-found: error
           retention-days: 3
-
-      - name: Upload ZIP for S3 job
-        uses: actions/upload-artifact@v4
-        with:
-          name: react-build-zip-${{ github.run_id }}
-          path: react-build.zip
-          if-no-files-found: error
-          retention-days: 3
-
-  # 3. Build and push Docker image
-  build-and-push:
-    name: Build and Push Docker Image
-    needs: build-app
-    runs-on: company-eks-runners
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download React build
-        uses: actions/download-artifact@v4
-        with:
-          name: react-build-${{ github.run_id }}
-          path: build/
-
-      - name: Verify Docker daemon
-        run: |
-          docker version
-          docker info
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver: docker-container
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Verify Docker build inputs
-        run: |
-          set -euo pipefail
-          test -f Dockerfile
-          test -d build
-          test -n "$(find build -type f -print -quit)"
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: |
-            hanibhavsar/react-app:${{ github.sha }}
-            hanibhavsar/react-app:latest
-          cache-from: type=gha,scope=react-app
-          cache-to: type=gha,mode=max,scope=react-app
-
-  # 4. Upload ZIP to private S3 and publish download link
-  upload-s3:
-    name: Upload Artifact to Private S3
-    needs: build-app
-    runs-on: company-eks-runners
-    timeout-minutes: 15
-
-    steps:
-      - name: Download React build ZIP
-        uses: actions/download-artifact@v4
-        with:
-          name: react-build-zip-${{ github.run_id }}
-          path: artifact-package/
 
       - name: Install AWS CLI v2
         uses: ankurk91/install-aws-cli-action@v1
@@ -462,23 +395,23 @@ jobs:
       - name: Verify AWS identity
         run: aws sts get-caller-identity
 
-      - name: Upload ZIP to private S3
+      - name: Upload ZIP directly to private S3
         id: upload
         env:
           BUCKET: ${{ vars.ARTIFACT_BUCKET }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
           RUN_NUMBER: ${{ github.run_number }}
           SHA: ${{ github.sha }}
-          AWS_REGION: ${{ vars.AWS_REGION }}
         shell: bash
         run: |
           set -euo pipefail
 
-          test -s artifact-package/react-build.zip
+          test -s react-build.zip
 
           KEY="react-app/builds/${RUN_NUMBER}-${SHA}/react-build.zip"
 
           aws s3 cp \
-            artifact-package/react-build.zip \
+            react-build.zip \
             "s3://${BUCKET}/${KEY}" \
             --region "$AWS_REGION" \
             --no-progress
@@ -486,17 +419,19 @@ jobs:
           aws s3api head-object \
             --bucket "$BUCKET" \
             --key "$KEY" \
-            --region "$AWS_REGION" \
-            > /dev/null
+            --region "$AWS_REGION" > /dev/null
 
           echo "artifact_key=${KEY}" >> "$GITHUB_OUTPUT"
 
-      - name: Generate presigned download URL
-        id: presign
+      # Generate and publish the link in the SAME job.
+      # This avoids passing the URL through job outputs.
+      - name: Generate S3 download link and publish summary
         env:
           BUCKET: ${{ vars.ARTIFACT_BUCKET }}
-          KEY: ${{ steps.upload.outputs.artifact_key }}
           AWS_REGION: ${{ vars.AWS_REGION }}
+          KEY: ${{ steps.upload.outputs.artifact_key }}
+          SHA: ${{ github.sha }}
+          RUN_NUMBER: ${{ github.run_number }}
         shell: bash
         run: |
           set -euo pipefail
@@ -508,18 +443,6 @@ jobs:
 
           test -n "$URL"
 
-          echo "::add-mask::$URL"
-          echo "url=${URL}" >> "$GITHUB_OUTPUT"
-
-      - name: Publish artifact download link
-        env:
-          URL: ${{ steps.presign.outputs.url }}
-          SHA: ${{ github.sha }}
-          RUN_NUMBER: ${{ github.run_number }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
           {
             echo "## React Build Artifact"
             echo
@@ -527,7 +450,60 @@ jobs:
             echo "- **Commit:** \`${SHA}\`"
             echo "- **Storage:** Private Amazon S3"
             echo "- **Requested URL lifetime:** 1 hour"
-            echo "- **Docker image:** \`hanibhavsar/react-app:${SHA}\`"
             echo
             echo "[Download React Build ZIP](${URL})"
+            echo
+            echo "The URL may expire sooner if the AWS credentials expire."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # 3. Build and push Docker image
+  build-and-push:
+    name: Build and Push Docker Image
+    needs: build-app
+    runs-on: company-eks-runners
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download React build
+        uses: actions/download-artifact@v4
+        with:
+          name: react-build-${{ github.run_id }}
+          path: build/
+
+      - name: Verify Docker build inputs
+        run: |
+          set -euo pipefail
+          test -f Dockerfile
+          test -d build
+          test -n "$(find build -type f -print -quit)"
+
+      - name: Verify Docker daemon
+        run: |
+          docker version
+          docker info
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            hanibhavsar/react-app:${{ github.sha }}
+            hanibhavsar/react-app:latest
+          cache-from: type=gha,scope=react-app
+          cache-to: type=gha,mode=max,scope=react-app
