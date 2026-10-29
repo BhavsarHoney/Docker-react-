@@ -378,193 +378,193 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-      - name: Install AWS CLI v2
-        uses: ankurk91/install-aws-cli-action@v1
-        with:
-          version: latest
-          cache: true
+      # - name: Install AWS CLI v2
+      #   uses: ankurk91/install-aws-cli-action@v1
+      #   with:
+      #     version: latest
+      #     cache: true
 
-      - name: Verify AWS CLI
-        run: aws --version
+      # - name: Verify AWS CLI
+      #   run: aws --version
 
-      # Authenticate to AWS using GitHub OIDC.
-      # No AWS access-key secrets are required.
-      - name: Configure AWS credentials using OIDC
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::454143665149:role/Hani-github-OIDC-Role
-          aws-region: ${{ vars.AWS_REGION }}
-          role-session-name: GitHubActionsS3Upload
+      # # Authenticate to AWS using GitHub OIDC.
+      # # No AWS access-key secrets are required.
+      # - name: Configure AWS credentials using OIDC
+      #   uses: aws-actions/configure-aws-credentials@v4
+      #   with:
+      #     role-to-assume: arn:aws:iam::454143665149:role/Hani-github-OIDC-Role
+      #     aws-region: ${{ vars.AWS_REGION }}
+      #     role-session-name: GitHubActionsS3Upload
 
-      - name: Verify AWS identity
-        run: aws sts get-caller-identity
+      # - name: Verify AWS identity
+      #   run: aws sts get-caller-identity
 
-      - name: Upload ZIP directly to private S3
-        id: upload
-        env:
-          BUCKET: ${{ vars.ARTIFACT_BUCKET }}
-          AWS_REGION: ${{ vars.AWS_REGION }}
-          RUN_NUMBER: ${{ github.run_number }}
-          SHA: ${{ github.sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
+      # - name: Upload ZIP directly to private S3
+      #   id: upload
+      #   env:
+      #     BUCKET: ${{ vars.ARTIFACT_BUCKET }}
+      #     AWS_REGION: ${{ vars.AWS_REGION }}
+      #     RUN_NUMBER: ${{ github.run_number }}
+      #     SHA: ${{ github.sha }}
+      #   shell: bash
+      #   run: |
+      #     set -euo pipefail
 
-          : "${BUCKET:?Set the ARTIFACT_BUCKET repository variable}"
-          : "${AWS_REGION:?Set the AWS_REGION repository variable}"
-          test -s react-build.zip
+      #     : "${BUCKET:?Set the ARTIFACT_BUCKET repository variable}"
+      #     : "${AWS_REGION:?Set the AWS_REGION repository variable}"
+      #     test -s react-build.zip
 
-          KEY="react-app/builds/${RUN_NUMBER}-${SHA}/react-build.zip"
+      #     KEY="react-app/builds/${RUN_NUMBER}-${SHA}/react-build.zip"
 
-          aws s3 cp \
-            react-build.zip \
-            "s3://${BUCKET}/${KEY}" \
-            --region "$AWS_REGION" \
-            --no-progress
+      #     aws s3 cp \
+      #       react-build.zip \
+      #       "s3://${BUCKET}/${KEY}" \
+      #       --region "$AWS_REGION" \
+      #       --no-progress
 
-          # Verify that the uploaded object exists.
-          aws s3api head-object \
-            --bucket "$BUCKET" \
-            --key "$KEY" \
-            --region "$AWS_REGION" > /dev/null
+      #     # Verify that the uploaded object exists.
+      #     aws s3api head-object \
+      #       --bucket "$BUCKET" \
+      #       --key "$KEY" \
+      #       --region "$AWS_REGION" > /dev/null
 
-          echo "artifact_key=${KEY}" >> "$GITHUB_OUTPUT"
+      #     echo "artifact_key=${KEY}" >> "$GITHUB_OUTPUT"
 
-      # Generate the presigned URL and publish it in the same job.
-      - name: Generate S3 download link and publish summary
-        env:
-          BUCKET: ${{ vars.ARTIFACT_BUCKET }}
-          AWS_REGION: ${{ vars.AWS_REGION }}
-          KEY: ${{ steps.upload.outputs.artifact_key }}
-          SHA: ${{ github.sha }}
-          RUN_NUMBER: ${{ github.run_number }}
-        shell: bash
-        run: |
-          set -euo pipefail
+      # # Generate the presigned URL and publish it in the same job.
+      # - name: Generate S3 download link and publish summary
+      #   env:
+      #     BUCKET: ${{ vars.ARTIFACT_BUCKET }}
+      #     AWS_REGION: ${{ vars.AWS_REGION }}
+      #     KEY: ${{ steps.upload.outputs.artifact_key }}
+      #     SHA: ${{ github.sha }}
+      #     RUN_NUMBER: ${{ github.run_number }}
+      #   shell: bash
+      #   run: |
+      #     set -euo pipefail
 
-          URL="$(aws s3 presign \
-            "s3://${BUCKET}/${KEY}" \
-            --region "$AWS_REGION" \
-            --expires-in 3600)"
+      #     URL="$(aws s3 presign \
+      #       "s3://${BUCKET}/${KEY}" \
+      #       --region "$AWS_REGION" \
+      #       --expires-in 3600)"
 
-          test -n "$URL"
+      #     test -n "$URL"
 
-          {
-            echo "## React Build Artifact"
-            echo
-            echo "- **Build:** ${RUN_NUMBER}"
-            echo "- **Commit:** \`${SHA}\`"
-            echo "- **Storage:** Private Amazon S3"
-            echo "- **Requested URL lifetime:** 1 hour"
-            echo
-            echo "[Download React Build ZIP](${URL})"
-            echo
-            echo "The URL can expire earlier if the AWS session credentials expire."
-          } >> "$GITHUB_STEP_SUMMARY"
+      #     {
+      #       echo "## React Build Artifact"
+      #       echo
+      #       echo "- **Build:** ${RUN_NUMBER}"
+      #       echo "- **Commit:** \`${SHA}\`"
+      #       echo "- **Storage:** Private Amazon S3"
+      #       echo "- **Requested URL lifetime:** 1 hour"
+      #       echo
+      #       echo "[Download React Build ZIP](${URL})"
+      #       echo
+      #       echo "The URL can expire earlier if the AWS session credentials expire."
+      #     } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Generate and validate pre-signed URL
-        id: presign
-        env:
-          BUCKET: ${{ vars.ARTIFACT_BUCKET }}
-          KEY: ${{ steps.upload.outputs.artifact_key }}
-          AWS_REGION: ${{ vars.AWS_REGION }}
-        shell: bash
-        run: |
-          set -euo pipefail
+      # - name: Generate and validate pre-signed URL
+      #   id: presign
+      #   env:
+      #     BUCKET: ${{ vars.ARTIFACT_BUCKET }}
+      #     KEY: ${{ steps.upload.outputs.artifact_key }}
+      #     AWS_REGION: ${{ vars.AWS_REGION }}
+      #   shell: bash
+      #   run: |
+      #     set -euo pipefail
 
-          URL="$(aws s3 presign \
-            "s3://${BUCKET}/${KEY}" \
-            --region "$AWS_REGION" \
-            --expires-in 3600)"
+      #     URL="$(aws s3 presign \
+      #       "s3://${BUCKET}/${KEY}" \
+      #       --region "$AWS_REGION" \
+      #       --expires-in 3600)"
 
 
-          # Pass the URL to later steps without printing it.
-          {
-            echo "url<<EOF"
-            echo "$URL"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+      #     # Pass the URL to later steps without printing it.
+      #     {
+      #       echo "url<<EOF"
+      #       echo "$URL"
+      #       echo "EOF"
+      #     } >> "$GITHUB_OUTPUT"
 
-      - name: Publish artifact download link
-        env:
-          URL: ${{ steps.presign.outputs.url }}
-          SHA: ${{ github.sha }}
-          RUN_NUMBER: ${{ github.run_number }}
-        shell: bash
-        run: |
-          set -euo pipefail
+      # - name: Publish artifact download link
+      #   env:
+      #     URL: ${{ steps.presign.outputs.url }}
+      #     SHA: ${{ github.sha }}
+      #     RUN_NUMBER: ${{ github.run_number }}
+      #   shell: bash
+      #   run: |
+      #     set -euo pipefail
 
-          {
-            echo "## React Build Artifact"
-            echo
-            echo "- **Build:** ${RUN_NUMBER}"
-            echo "- **Commit:** \`${SHA}\`"
-            echo "- **Storage:** Private Amazon S3"
-            echo "- **URL validity:** Up to one hour"
-            echo "- **Docker image:** \`hanibhavsar/react-app:${SHA}\`"
-            echo
-            echo "[Download React Build ZIP](${URL})"
-            echo
-            echo "The HTML download page is available in the workflow artifacts."
-          } >> "$GITHUB_STEP_SUMMARY"
+      #     {
+      #       echo "## React Build Artifact"
+      #       echo
+      #       echo "- **Build:** ${RUN_NUMBER}"
+      #       echo "- **Commit:** \`${SHA}\`"
+      #       echo "- **Storage:** Private Amazon S3"
+      #       echo "- **URL validity:** Up to one hour"
+      #       echo "- **Docker image:** \`hanibhavsar/react-app:${SHA}\`"
+      #       echo
+      #       echo "[Download React Build ZIP](${URL})"
+      #       echo
+      #       echo "The HTML download page is available in the workflow artifacts."
+      #     } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Create HTML download page
-        env:
-          DOWNLOAD_URL: ${{ steps.presign.outputs.url }}
-        shell: bash
-        run: |
-          set -euo pipefail
+      # - name: Create HTML download page
+      #   env:
+      #     DOWNLOAD_URL: ${{ steps.presign.outputs.url }}
+      #   shell: bash
+      #   run: |
+      #     set -euo pipefail
 
-          python3 - <<'PY'
-          import os
-          from html import escape
-          url = escape(os.environ["DOWNLOAD_URL"], quote=True)
-          html = f"""<!DOCTYPE html>
-          <html lang="en">
-          <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-            <title>React Build Download</title>
-          </head>
-          <body>
-            <h1>React Build Download</h1>
-            <p><a href="{url}">Download React Build ZIP</a></p>
-            <p>This temporary link expires after approximately one hour.</p>
-          </body>
-          </html>
-          """
-          with open("index.html", "w", encoding="utf-8") as f:
-              f.write(html)
+      #     python3 - <<'PY'
+      #     import os
+      #     from html import escape
+      #     url = escape(os.environ["DOWNLOAD_URL"], quote=True)
+      #     html = f"""<!DOCTYPE html>
+      #     <html lang="en">
+      #     <head>
+      #       <meta charset="UTF-8">
+      #       <meta name="viewport" content="width=device-width, initial-scale=1">
+      #       <title>React Build Download</title>
+      #     </head>
+      #     <body>
+      #       <h1>React Build Download</h1>
+      #       <p><a href="{url}">Download React Build ZIP</a></p>
+      #       <p>This temporary link expires after approximately one hour.</p>
+      #     </body>
+      #     </html>
+      #     """
+      #     with open("index.html", "w", encoding="utf-8") as f:
+      #         f.write(html)
 
-          print("HTML download page created.")
+      #     print("HTML download page created.")
 
-      - name: Upload HTML page as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: react-build-download-page
-          path: index.html
-          if-no-files-found: error
-          retention-days: 1
+      # - name: Upload HTML page as artifact
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: react-build-download-page
+      #     path: index.html
+      #     if-no-files-found: error
+      #     retention-days: 1
 
-      - name: Add HTML artifact link to Summary
-        env:
-          ARTIFACT_URL: ${{ steps.html-report.outputs.artifact-url }}
-          ARTIFACT_ID: ${{ steps.html-report.outputs.artifact-id }}
-        shell: bash
-        run: |
-          URL="${ARTIFACT_URL}/artifacts/${ARTIFACT_ID}/index.html"
-          {
-            echo "## HTML Report"
-            echo
-            echo "[Open or download HTML report](${URL})"
-          } >> "$GITHUB_STEP_SUMMARY"
+      # - name: Add HTML artifact link to Summary
+      #   env:
+      #     ARTIFACT_URL: ${{ steps.html-report.outputs.artifact-url }}
+      #     ARTIFACT_ID: ${{ steps.html-report.outputs.artifact-id }}
+      #   shell: bash
+      #   run: |
+      #     URL="${ARTIFACT_URL}/artifacts/${ARTIFACT_ID}/index.html"
+      #     {
+      #       echo "## HTML Report"
+      #       echo
+      #       echo "[Open or download HTML report](${URL})"
+      #     } >> "$GITHUB_STEP_SUMMARY"
 
   # 3. Build and push Docker image
   build-and-push:
     name: Build and Push Docker Image
     needs: build-app
     runs-on: company-eks-runners
-    timeout-minutes: 30
+    # timeout-minutes: 30
 
     steps:
       - name: Checkout code
