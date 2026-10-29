@@ -549,14 +549,15 @@ jobs:
       - name: Add HTML artifact link to Summary
         env:
           ARTIFACT_URL: ${{ steps.html-report.outputs.artifact-url }}
+          ARTIFACT_ID: ${{ steps.html-report.outputs.artifact-id }}
         shell: bash
         run: |
+          URL="${ARTIFACT_URL}/artifacts/${ARTIFACT_ID}/index.html"
           {
             echo "## HTML Report"
             echo
-            echo "[Open or download HTML report](${ARTIFACT_URL})"
+            echo "[Open or download HTML report](${URL})"
           } >> "$GITHUB_STEP_SUMMARY"
-
 
   # 3. Build and push Docker image
   build-and-push:
