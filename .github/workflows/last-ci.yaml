@@ -302,13 +302,14 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   # 1. Test application
   test:
     name: Node.js Tests
     runs-on: company-eks-runners
-    timeout-minutes: 15
+    # timeout-minutes: 15
 
     steps:
       - name: Checkout code
@@ -331,13 +332,12 @@ jobs:
       - name: Run tests
         run: npm test --if-present
 
-  # 2. Build React, upload ZIP directly to S3,
-  #    and publish the download link
+  # 2. Build React and upload the ZIP to private S3
   build-app:
     name: Build React and Upload to S3
     needs: test
     runs-on: company-eks-runners
-    timeout-minutes: 20
+    # timeout-minutes: 20
 
     steps:
       - name: Checkout code
@@ -353,6 +353,7 @@ jobs:
         run: npm ci
 
       - name: Build React application
+        shell: bash
         run: |
           set -euo pipefail
           npm run build
@@ -360,14 +361,15 @@ jobs:
           test -n "$(find build -type f -print -quit)"
 
       - name: Package React build
+        shell: bash
         run: |
           set -euo pipefail
           python3 -m zipfile -c react-build.zip build
           test -s react-build.zip
           python3 -m zipfile -t react-build.zip
 
-      # Required by the separate Docker job.
-      # The ZIP is NOT uploaded as a GitHub artifact.
+      # The Docker job needs the build directory.
+      # This is a GitHub Actions artifact, separate from the S3 ZIP.
       - name: Upload React build for Docker job
         uses: actions/upload-artifact@v4
         with:
@@ -385,12 +387,14 @@ jobs:
       - name: Verify AWS CLI
         run: aws --version
 
-      - name: Configure AWS credentials
+      # Authenticate to AWS using GitHub OIDC.
+      # No AWS access-key secrets are required.
+      - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: arn:aws:iam::454143665149:role/Hani-github-OIDC-Role
           aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: GitHubActionsS3Upload
 
       - name: Verify AWS identity
         run: aws sts get-caller-identity
@@ -406,6 +410,8 @@ jobs:
         run: |
           set -euo pipefail
 
+          : "${BUCKET:?Set the ARTIFACT_BUCKET repository variable}"
+          : "${AWS_REGION:?Set the AWS_REGION repository variable}"
           test -s react-build.zip
 
           KEY="react-app/builds/${RUN_NUMBER}-${SHA}/react-build.zip"
@@ -416,6 +422,7 @@ jobs:
             --region "$AWS_REGION" \
             --no-progress
 
+          # Verify that the uploaded object exists.
           aws s3api head-object \
             --bucket "$BUCKET" \
             --key "$KEY" \
@@ -423,8 +430,7 @@ jobs:
 
           echo "artifact_key=${KEY}" >> "$GITHUB_OUTPUT"
 
-      # Generate and publish the link in the SAME job.
-      # This avoids passing the URL through job outputs.
+      # Generate the presigned URL and publish it in the same job.
       - name: Generate S3 download link and publish summary
         env:
           BUCKET: ${{ vars.ARTIFACT_BUCKET }}
@@ -453,7 +459,7 @@ jobs:
             echo
             echo "[Download React Build ZIP](${URL})"
             echo
-            echo "The URL may expire sooner if the AWS credentials expire."
+            echo "The URL can expire earlier if the AWS session credentials expire."
           } >> "$GITHUB_STEP_SUMMARY"
 
   # 3. Build and push Docker image
@@ -474,6 +480,7 @@ jobs:
           path: build/
 
       - name: Verify Docker build inputs
+        shell: bash
         run: |
           set -euo pipefail
           test -f Dockerfile
